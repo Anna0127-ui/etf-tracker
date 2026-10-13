@@ -5,11 +5,11 @@ import yfinance as yf
 
 # 1. 網頁基本設定
 st.set_page_config(
-    page_title="ETF 逢低加碼與資產試算儀表板", page_icon="📈", layout="centered"
+    page_title="ETF 逢低加碼與個人資產試算儀表板", page_icon="📈", layout="centered"
 )
 
-st.title("📈 ETF 逢低加碼與資產試算觀察系統")
-st.caption("結合「最適加碼細節 + 大盤趨勢 + 定期定額歷史扣款模擬」")
+st.title("📈 ETF 逢低加碼與個人資產試算系統")
+st.caption("結合「最適加碼細節 + 大盤趨勢 + 個人扣款明細記帳 + 逢低加碼模擬器」")
 
 
 # 2. 數據抓取
@@ -74,36 +74,18 @@ else:
     m_rs = m_gain / m_loss
     market_rsi14 = (100 - (100 / (1 + m_rs))).iloc[-1]
 
-    # --- 各項得分詳細計算 ---
-    s_pullback = 0
-    if pullback_pct <= -10:
-        s_pullback = 35
-    elif pullback_pct <= -8:
-        s_pullback = 25
-    elif pullback_pct <= -5:
-        s_pullback = 10
-
-    s_rsi = 0
-    if rsi14 < 30:
-        s_rsi = 25
-    elif rsi14 < 40:
-        s_rsi = 10
-
-    s_ma = 0
-    if latest_price < ma240:
-        s_ma = 20
-    elif latest_price < ma60:
-        s_ma = 10
-
-    s_market = 0
-    if market_rsi14 < 35:
-        s_market = 20
-    elif market_latest < market_ma60:
-        s_market = 10
-
+    # --- 得分計算 ---
+    s_pullback = (
+        35 if pullback_pct <= -10 else (25 if pullback_pct <= -8 else (10 if pullback_pct <= -5 else 0))
+    )
+    s_rsi = 25 if rsi14 < 30 else (10 if rsi14 < 40 else 0)
+    s_ma = 20 if latest_price < ma240 else (10 if latest_price < ma60 else 0)
+    s_market = (
+        20 if market_rsi14 < 35 else (10 if market_latest < market_ma60 else 0)
+    )
     total_score = s_pullback + s_rsi + s_ma + s_market
 
-    # --- 頂部大盤與個股卡片 ---
+    # --- 頂部總覽 ---
     st.subheader("🌐 大盤與個股總覽")
     m1, m2 = st.columns(2)
     m1.metric(
@@ -174,136 +156,63 @@ else:
         delta="大盤同步修正" if s_market > 0 else "大盤正常",
     )
 
-    # --- 🎯 升級：基於真實歷史股價變化的定期定額與配息試算 ---
+    # ==========================================
+    # 🎯 升級 1：個人定期定額買入歷史明細記帳表
+    # ==========================================
     st.markdown("---")
-    st.subheader("💰 定期定額歷史扣款與資產試算")
+    st.subheader("📝 個人每月定期定額買入明細與資產彙整")
 
-    with st.expander("🧮 點擊展開 / 輸入個人扣款參數與歷史對照", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        monthly_dca = c1.number_input(
-            "每月定期定額金額 (台幣)", value=1500, step=500
+    with st.expander(
+        "📂 點擊展開 / 點擊表格可直接新增、修改您的買入價格與股數", expanded=True
+    ):
+        # 初始化預設表格數據 (提供範例資料)
+        if "dca_records" not in st.session_state:
+            st.session_state.dca_records = pd.DataFrame(
+                [
+                    {"買入日期": "2024-01-02", "買入單價": 22.50, "買入股數": 66},
+                    {"買入日期": "2024-02-01", "買入單價": 22.80, "買入股數": 65},
+                    {"買入日期": "2024-03-01", "買入單價": 23.10, "買入股數": 64},
+                    {"買入日期": "2024-04-01", "買入單價": 22.20, "買入股數": 67},
+                ]
+            )
+
+        st.caption("💡 可在下方表格直接點擊編輯數值，或點選表格下方 `+` 新增扣款紀錄：")
+
+        # 使用可編輯表格 st.data_editor
+        edited_df = st.data_editor(
+            st.session_state.dca_records,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "買入日期": st.column_config.TextColumn("扣款日期"),
+                "買入單價": st.column_config.NumberColumn(
+                    "買入成交單價 ($)", format="$%.2f", min_value=0.0
+                ),
+                "買入股數": st.column_config.NumberColumn(
+                    "成交股數 (股)", format="%d 股", min_value=0
+                ),
+            },
         )
-        months_count = c2.number_input(
-            "已持續扣款月數",
-            value=12,
-            min_value=1,
-            max_value=24,
-            step=1,
-        )
-        extra_buys_count = c3.number_input(
-            "逢低加碼執行次數 (每次 $1,500)",
-            value=2,
-            min_value=0,
-            step=1,
-        )
 
-        default_yield = 6.5 if "00878" in ticker else 2.5
-        est_yield_pct = st.slider(
-            "預估年化殖利率 (%)",
-            min_value=1.0,
-            max_value=10.0,
-            value=default_yield,
-            step=0.5,
-        )
-
-        # === 核心升級：抓取歷史每個月的第一個交易日股價進行精準模擬 ===
-        monthly_df = df.resample("MS").first().iloc[-months_count:]
-        monthly_prices = monthly_df["Close"]
-
-        # 計算定期定額累積零股數
-        dca_shares_list = [monthly_dca / p for p in monthly_prices]
-        total_dca_shares = sum(dca_shares_list)
-
-        # 假設逢低加碼買在近期較低點（以近半年低點均價計算）
-        recent_low_avg = (
-            df["Low"].iloc[-120:].min() + df["Close"].iloc[-120:].mean()
-        ) / 2
-        extra_shares = (
-            (monthly_dca * extra_buys_count) / recent_low_avg
-            if recent_low_avg > 0
+        # 計算歷史扣款總數據
+        edited_df["單筆投入金額"] = edited_df["買入單價"] * edited_df["買入股數"]
+        total_dca_principal = edited_df["單筆投入金額"].sum()
+        total_dca_shares = edited_df["買入股數"].sum()
+        avg_dca_cost = (
+            total_dca_principal / total_dca_shares
+            if total_dca_shares > 0
             else 0
         )
 
-        # 總統計數據
-        total_principal = (monthly_dca * months_count) + (
-            monthly_dca * extra_buys_count
-        )
-        total_shares = total_dca_shares + extra_shares
-        avg_cost_price = (
-            total_principal / total_shares if total_shares > 0 else 0
-        )
-
-        est_current_value = total_shares * latest_price
-        est_profit = est_current_value - total_principal
-        est_roi = (
-            (est_profit / total_principal) * 100 if total_principal > 0 else 0
+        current_dca_value = total_dca_shares * latest_price
+        dca_profit = current_dca_value - total_dca_principal
+        dca_roi = (
+            (dca_profit / total_dca_principal) * 100
+            if total_dca_principal > 0
+            else 0
         )
 
-        # 預估配息
-        est_annual_dividend = est_current_value * (est_yield_pct / 100)
-        est_quarterly_dividend = est_annual_dividend / 4
-
-        st.markdown("#### 📊 依歷史股價真實模擬結果：")
-        r1, r2, r3 = st.columns(3)
-        r1.metric(label="總投入本金", value=f"${total_principal:,.0f} 元")
-        r2.metric(label="累積持股數量", value=f"{total_shares:,.1f} 股")
-        r3.metric(label="您的真實平均成本", value=f"${avg_cost_price:.2f} 元")
-
-        st.markdown("---")
-        r4, r5, r6 = st.columns(3)
-        r4.metric(label="目前預估總市值", value=f"${est_current_value:,.0f} 元")
-        r5.metric(
-            label="累積投資損益",
-            value=f"${est_profit:+,.0f} 元",
-            delta=f"{est_roi:+.2f}% 報酬率",
-        )
-        r6.metric(
-            label="預估每年可領配息",
-            value=f"${est_annual_dividend:,.0f} 元",
-            delta=f"每季約 ${est_quarterly_dividend:,.0f} 元",
-        )
-
-    # --- 6. 走勢圖表 (可折疊) ---
-    st.markdown("---")
-    with st.expander("📉 點擊展開 / 折疊 K 線與均線走勢圖表"):
-        chart_df = df.iloc[-120:]
-        fig = go.Figure()
-
-        fig.add_trace(
-            go.Candlestick(
-                x=chart_df.index,
-                open=chart_df["Open"],
-                high=chart_df["High"],
-                low=chart_df["Low"],
-                close=chart_df["Close"],
-                name="K線",
-                increasing_line_color="red",
-                increasing_fillcolor="red",
-                decreasing_line_color="green",
-                decreasing_fillcolor="green",
-            )
-        )
-
-        fig.add_trace(
-            go.Scatter(
-                x=chart_df.index,
-                y=chart_df["MA60"],
-                line=dict(color="orange", width=1.5),
-                name="60日季線",
-            )
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=chart_df.index,
-                y=chart_df["MA240"],
-                line=dict(color="blue", width=2.0),
-                name="240日年線",
-            )
-        )
-
-        fig.update_layout(
-            xaxis_rangeslider_visible=False,
-            height=400,
-            margin=dict(l=10, r=10, t=10, b=10),
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("#### 📊 個人歷史買入統計總覽：")
+        a1, a2, a3 = st.columns(3)
+        a1.metric(
+            label="累積總投入本金", value=
