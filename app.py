@@ -75,14 +75,36 @@ else:
     market_rsi14 = (100 - (100 / (1 + m_rs))).iloc[-1]
 
     # --- 得分計算 ---
-    s_pullback = (
-        35 if pullback_pct <= -10 else (25 if pullback_pct <= -8 else (10 if pullback_pct <= -5 else 0))
-    )
-    s_rsi = 25 if rsi14 < 30 else (10 if rsi14 < 40 else 0)
-    s_ma = 20 if latest_price < ma240 else (10 if latest_price < ma60 else 0)
-    s_market = (
-        20 if market_rsi14 < 35 else (10 if market_latest < market_ma60 else 0)
-    )
+    if pullback_pct <= -10:
+        s_pullback = 35
+    elif pullback_pct <= -8:
+        s_pullback = 25
+    elif pullback_pct <= -5:
+        s_pullback = 10
+    else:
+        s_pullback = 0
+
+    if rsi14 < 30:
+        s_rsi = 25
+    elif rsi14 < 40:
+        s_rsi = 10
+    else:
+        s_rsi = 0
+
+    if latest_price < ma240:
+        s_ma = 20
+    elif latest_price < ma60:
+        s_ma = 10
+    else:
+        s_ma = 0
+
+    if market_rsi14 < 35:
+        s_market = 20
+    elif market_latest < market_ma60:
+        s_market = 10
+    else:
+        s_market = 0
+
     total_score = s_pullback + s_rsi + s_ma + s_market
 
     # --- 頂部總覽 ---
@@ -156,16 +178,13 @@ else:
         delta="大盤同步修正" if s_market > 0 else "大盤正常",
     )
 
-    # ==========================================
-    # 🎯 升級 1：個人定期定額買入歷史明細記帳表
-    # ==========================================
+    # --- 個人定期定額買入歷史明細記帳表 ---
     st.markdown("---")
     st.subheader("📝 個人每月定期定額買入明細與資產彙整")
 
     with st.expander(
         "📂 點擊展開 / 點擊表格可直接新增、修改您的買入價格與股數", expanded=True
     ):
-        # 初始化預設表格數據 (提供範例資料)
         if "dca_records" not in st.session_state:
             st.session_state.dca_records = pd.DataFrame(
                 [
@@ -178,7 +197,6 @@ else:
 
         st.caption("💡 可在下方表格直接點擊編輯數值，或點選表格下方 `+` 新增扣款紀錄：")
 
-        # 使用可編輯表格 st.data_editor
         edited_df = st.data_editor(
             st.session_state.dca_records,
             num_rows="dynamic",
@@ -194,7 +212,6 @@ else:
             },
         )
 
-        # 計算歷史扣款總數據
         edited_df["單筆投入金額"] = edited_df["買入單價"] * edited_df["買入股數"]
         total_dca_principal = edited_df["單筆投入金額"].sum()
         total_dca_shares = edited_df["買入股數"].sum()
@@ -215,4 +232,76 @@ else:
         st.markdown("#### 📊 個人歷史買入統計總覽：")
         a1, a2, a3 = st.columns(3)
         a1.metric(
-            label="累積總投入本金", value=
+            label="累積總投入本金",
+            value=f"${total_dca_principal:,.0f} 元",
+        )
+        a2.metric(
+            label="累積持股總數量",
+            value=f"{total_dca_shares:,.0f} 股",
+        )
+        a3.metric(
+            label="加權平均買進成本",
+            value=f"${avg_dca_cost:.2f} 元",
+            delta=f"與現價相差 ${latest_price - avg_dca_cost:+.2f}",
+        )
+
+        b1, b2 = st.columns(2)
+        b1.metric(
+            label="定期定額目前總市值",
+            value=f"${current_dca_value:,.0f} 元",
+        )
+        b2.metric(
+            label="累積投資損益",
+            value=f"${dca_profit:+,.0f} 元",
+            delta=f"{dca_roi:+.2f}% 報酬率",
+        )
+
+    # --- 逢低加碼買進試算表 (情境模擬器) ---
+    st.markdown("---")
+    st.subheader("💡 逢低加碼買進情境模擬器")
+    st.caption("試算如果您現在執行單筆加碼，對平均成本與未來配息的影響：")
+
+    with st.expander("🧮 點擊展開 / 輸入加碼試算參數", expanded=True):
+        sim_col1, sim_col2 = st.columns(2)
+
+        add_budget = sim_col1.number_input(
+            "預計加碼金額 (台幣)", value=3000, step=1000
+        )
+        add_target_price = sim_col2.number_input(
+            "預計買進成交單價 (預設為當前現價)",
+            value=float(round(latest_price, 2)),
+            step=0.1,
+        )
+
+        default_yield = 6.5 if "00878" in ticker else 2.5
+        est_yield_pct = st.slider(
+            "預估年化殖利率 (%)",
+            min_value=1.0,
+            max_value=10.0,
+            value=default_yield,
+            step=0.5,
+        )
+
+        add_shares = (
+            int(add_budget / add_target_price) if add_target_price > 0 else 0
+        )
+        actual_add_cost = add_shares * add_target_price
+
+        new_total_principal = total_dca_principal + actual_add_cost
+        new_total_shares = total_dca_shares + add_shares
+        new_avg_cost = (
+            new_total_principal / new_total_shares
+            if new_total_shares > 0
+            else 0
+        )
+
+        new_total_value = new_total_shares * latest_price
+        annual_div = new_total_value * (est_yield_pct / 100)
+        quarterly_div = annual_div / 4
+
+        st.markdown("#### 🎯 加碼後資產變化模擬：")
+        s1, s2, s3 = st.columns(3)
+        s1.metric(
+            label="加碼可買進股數",
+            value=f"{add_shares:,} 股",
+            delta=
