@@ -5,11 +5,11 @@ import yfinance as yf
 
 # 1. 網頁基本設定
 st.set_page_config(
-    page_title="ETF 逢低加碼與試算儀表板", page_icon="📈", layout="centered"
+    page_title="ETF 逢低加碼與資產試算儀表板", page_icon="📈", layout="centered"
 )
 
 st.title("📈 ETF 逢低加碼與資產試算觀察系統")
-st.caption("結合「最適加碼細節 + 大盤趨勢 + 定期定額與配息記帳」")
+st.caption("結合「最適加碼細節 + 大盤趨勢 + 定期定額歷史扣款模擬」")
 
 
 # 2. 數據抓取
@@ -135,7 +135,7 @@ else:
         delta_color="inverse" if latest_price < ma60 else "normal",
     )
 
-    # --- 🎯 升級：加碼最適時間與得分明細直接顯示 ---
+    # --- 加碼最適時間 ---
     st.markdown("---")
     st.subheader("🚨 當前是否為「加碼最適時間」？")
 
@@ -174,17 +174,21 @@ else:
         delta="大盤同步修正" if s_market > 0 else "大盤正常",
     )
 
-    # --- 🎯 升級：每月定期定額 + 逢低加碼歷史試算與配息估計 ---
+    # --- 🎯 升級：基於真實歷史股價變化的定期定額與配息試算 ---
     st.markdown("---")
-    st.subheader("💰 定期定額與配息試算記帳器")
+    st.subheader("💰 定期定額歷史扣款與資產試算")
 
-    with st.expander("🧮 點擊展開 / 輸入個人定期定額扣款與配息試算", expanded=True):
+    with st.expander("🧮 點擊展開 / 輸入個人扣款參數與歷史對照", expanded=True):
         c1, c2, c3 = st.columns(3)
         monthly_dca = c1.number_input(
             "每月定期定額金額 (台幣)", value=1500, step=500
         )
         months_count = c2.number_input(
-            "已持續扣款月數", value=12, min_value=1, step=1
+            "已持續扣款月數",
+            value=12,
+            min_value=1,
+            max_value=24,
+            step=1,
         )
         extra_buys_count = c3.number_input(
             "逢低加碼執行次數 (每次 $1,500)",
@@ -193,7 +197,6 @@ else:
             step=1,
         )
 
-        # 估計殖利率設定 (00878 約 6.5%, 0050 約 2.5%)
         default_yield = 6.5 if "00878" in ticker else 2.5
         est_yield_pct = st.slider(
             "預估年化殖利率 (%)",
@@ -203,38 +206,61 @@ else:
             step=0.5,
         )
 
-        # 計算總投入本金
-        total_dca_invested = monthly_dca * months_count
-        total_extra_invested = monthly_dca * extra_buys_count
-        total_principal = total_dca_invested + total_extra_invested
+        # === 核心升級：抓取歷史每個月的第一個交易日股價進行精準模擬 ===
+        monthly_df = df.resample("MS").first().iloc[-months_count:]
+        monthly_prices = monthly_df["Close"]
 
-        # 簡單估算持有股數與市值 (假設平均買進成本介於季線與現價之間)
-        avg_cost = (ma60 + latest_price) / 2 if ma60 > 0 else latest_price
-        est_total_shares = (
-            total_principal / avg_cost if avg_cost > 0 else 0
+        # 計算定期定額累積零股數
+        dca_shares_list = [monthly_dca / p for p in monthly_prices]
+        total_dca_shares = sum(dca_shares_list)
+
+        # 假設逢低加碼買在近期較低點（以近半年低點均價計算）
+        recent_low_avg = (
+            df["Low"].iloc[-120:].min() + df["Close"].iloc[-120:].mean()
+        ) / 2
+        extra_shares = (
+            (monthly_dca * extra_buys_count) / recent_low_avg
+            if recent_low_avg > 0
+            else 0
         )
-        est_current_value = est_total_shares * latest_price
+
+        # 總統計數據
+        total_principal = (monthly_dca * months_count) + (
+            monthly_dca * extra_buys_count
+        )
+        total_shares = total_dca_shares + extra_shares
+        avg_cost_price = (
+            total_principal / total_shares if total_shares > 0 else 0
+        )
+
+        est_current_value = total_shares * latest_price
         est_profit = est_current_value - total_principal
         est_roi = (
             (est_profit / total_principal) * 100 if total_principal > 0 else 0
         )
 
-        # 預估年度配息金額
+        # 預估配息
         est_annual_dividend = est_current_value * (est_yield_pct / 100)
         est_quarterly_dividend = est_annual_dividend / 4
 
-        st.markdown("#### 📊 您的資產與配息預估結果：")
+        st.markdown("#### 📊 依歷史股價真實模擬結果：")
         r1, r2, r3 = st.columns(3)
         r1.metric(label="總投入本金", value=f"${total_principal:,.0f} 元")
-        r2.metric(
-            label="目前預估總市值",
-            value=f"${est_current_value:,.0f} 元",
-            delta=f"${est_profit:+,.0f} 元 ({est_roi:+.1f}%)",
+        r2.metric(label="累積持股數量", value=f"{total_shares:,.1f} 股")
+        r3.metric(label="您的真實平均成本", value=f"${avg_cost_price:.2f} 元")
+
+        st.markdown("---")
+        r4, r5, r6 = st.columns(3)
+        r4.metric(label="目前預估總市值", value=f"${est_current_value:,.0f} 元")
+        r5.metric(
+            label="累積投資損益",
+            value=f"${est_profit:+,.0f} 元",
+            delta=f"{est_roi:+.2f}% 報酬率",
         )
-        r3.metric(
+        r6.metric(
             label="預估每年可領配息",
             value=f"${est_annual_dividend:,.0f} 元",
-            delta=f"約每季 ${est_quarterly_dividend:,.0f} 元",
+            delta=f"每季約 ${est_quarterly_dividend:,.0f} 元",
         )
 
     # --- 6. 走勢圖表 (可折疊) ---
