@@ -1,17 +1,40 @@
+import json
+import os
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
-# 1. 網頁頁面標題與設定
+# 1. 網頁基本設定
 st.set_page_config(
     page_title="ETF 逢低加碼與資產試算儀表板", page_icon="📈", layout="centered"
 )
+
 st.title("📈 ETF 逢低加碼與資產試算觀察系統")
-st.caption("結合「加碼時機評分 + 大盤環境 + 個人扣款記帳 + 逢低加碼模擬」")
+st.caption(
+    "結合「加碼時機評分細節 + 大盤環境 + 分別儲存不同 ETF 紀錄 + 逢低加碼模擬」"
+)
+
+DATA_FILE = "dca_records_storage.json"
 
 
-# 2. 歷史數據抓取函式
+# 載入與儲存不同 ETF 紀錄的本地函式
+def load_all_records():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_all_records(records_dict):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(records_dict, f, ensure_ascii=False, indent=2)
+
+
+# 2. 數據抓取
 @st.cache_data(ttl=3600)
 def load_data(symbol):
     df = yf.download(symbol, period="2y", progress=False)
@@ -37,7 +60,7 @@ if df.empty:
         f"❌ 查無代碼 `{ticker}` 的數據，請確認代碼是否正確（例如：0050 或 00878）。"
     )
 else:
-    # --- 核心技術指標計算 ---
+    # --- 指標計算 ---
     df["MA60"] = df["Close"].rolling(60).mean()
     df["MA240"] = df["Close"].rolling(240).mean()
 
@@ -71,20 +94,63 @@ else:
     m_rs = m_gain / m_loss
     market_rsi14 = float((100 - (100 / (1 + m_rs))).iloc[-1])
 
-    # --- 各項指標得分計算 ---
-    s_pullback = (
-        35
-        if pullback_pct <= -10
-        else (25 if pullback_pct <= -8 else (10 if pullback_pct <= -5 else 0))
-    )
-    s_rsi = 25 if rsi14 < 30 else (10 if rsi14 < 40 else 0)
-    s_ma = 20 if latest_price < ma240 else (10 if latest_price < ma60 else 0)
-    s_market = (
-        20 if market_rsi14 < 35 else (10 if market_latest < market_ma60 else 0)
-    )
+    # --- 各項得分詳細邏輯與說明 ---
+    # 1. 拉回
+    if pullback_pct <= -10:
+        s_pullback = 35
+        desc_pullback = f"現價 ${latest_price:.2f} 距高點 ${high_6m:.2f} 已拉回 {pullback_pct:.1f}% (達 -10% 滿分區)"
+    elif pullback_pct <= -8:
+        s_pullback = 25
+        desc_pullback = f"現價 ${latest_price:.2f} 距高點 ${high_6m:.2f} 已拉回 {pullback_pct:.1f}% (達 -8% 標準區)"
+    elif pullback_pct <= -5:
+        s_pullback = 10
+        desc_pullback = f"現價 ${latest_price:.2f} 距高點 ${high_6m:.2f} 已拉回 {pullback_pct:.1f}% (達 -5% 觀察區)"
+    else:
+        s_pullback = 0
+        desc_pullback = f"現價 ${latest_price:.2f} 距高點 ${high_6m:.2f} 拉回 {pullback_pct:.1f}% (未達 -5% 門檻)"
+
+    # 2. RSI
+    if rsi14 < 30:
+        s_rsi = 25
+        desc_rsi = f"當前 RSI 為 {rsi14:.1f} (進入 <30 極度恐慌/過賣區)"
+    elif rsi14 < 40:
+        s_rsi = 10
+        desc_rsi = f"當前 RSI 為 {rsi14:.1f} (進入 <40 相對低點區)"
+    else:
+        s_rsi = 0
+        desc_rsi = f"當前 RSI 為 {rsi14:.1f} (屬於 >40 一般高位市場)"
+
+    # 3. 均線
+    if latest_price < ma240:
+        s_ma = 20
+        desc_ma = (
+            f"現價 ${latest_price:.2f} < 年線 ${ma240:.2f} (跌破 240日長線支撐)"
+        )
+    elif latest_price < ma60:
+        s_ma = 10
+        desc_ma = (
+            f"現價 ${latest_price:.2f} < 季線 ${ma60:.2f} (跌破 60日中線支撐)"
+        )
+    else:
+        s_ma = 0
+        desc_ma = f"現價 ${latest_price:.2f} 高於季線 ${ma60:.2f} 與年線 ${ma240:.2f}"
+
+    # 4. 大盤
+    if market_rsi14 < 35:
+        s_market = 20
+        desc_market = (
+            f"大盤 RSI 為 {market_rsi14:.1f} (全市場陷入恐慌，系統性加碼區)"
+        )
+    elif market_latest < market_ma60:
+        s_market = 10
+        desc_market = f"加權指數 {market_latest:,.0f} 跌破季線 {market_ma60:,.0f} (大盤回檔)"
+    else:
+        s_market = 0
+        desc_market = f"大盤指數 {market_latest:,.0f} 位於季線上，市場情緒穩定"
+
     total_score = s_pullback + s_rsi + s_ma + s_market
 
-    # --- 1. 大盤與個股頂部數據 ---
+    # --- 1. 大盤與個股總覽 ---
     st.subheader("🌐 大盤與個股總覽")
     m1, m2 = st.columns(2)
     m1.metric(
@@ -115,7 +181,7 @@ else:
         delta_color="inverse" if latest_price < ma60 else "normal",
     )
 
-    # --- 2. 加碼最適時間儀表板 ---
+    # --- 2. 加碼最適時間儀表板 (含定義與目前狀況) ---
     st.markdown("---")
     st.subheader("🚨 當前是否為「加碼最適時間」？")
 
@@ -135,48 +201,71 @@ else:
             "⚪ **【觀望期（維持定期定額）】**\n\n未達顯著低點與安全邊際，請保持原本的「定期定額」固定扣款即可。"
         )
 
-    st.markdown("##### 📝 各項加碼指標得分明細：")
-    d1, d2, d3, d4 = st.columns(4)
-    d1.metric(
-        label="高點拉回",
-        value=f"{s_pullback}/35分",
-        delta=f"拉回 {pullback_pct:.1f}%",
-    )
-    d2.metric(label="個股恐慌", value=f"{s_rsi}/25分", delta=f"RSI {rsi14:.1f}")
-    d3.metric(
-        label="季線/年線",
-        value=f"{s_ma}/20分",
-        delta="破季線/年線" if s_ma > 0 else "線上",
-    )
-    d4.metric(
-        label="大盤環境",
-        value=f"{s_market}/20分",
-        delta="大盤同步修正" if s_market > 0 else "大盤正常",
+    st.markdown("##### 📝 各項加碼指標得分定義與當前狀況：")
+
+    with st.expander("🔍 點擊查看評分標準與實時診斷明細", expanded=True):
+        st.markdown(f"**1. 高點拉回得分：`{s_pullback} / 35分`**")
+        st.caption(
+            "📌 **得分定義**：近6個月高點拉回 $\ge 10\%$ 得 35分 | $\ge 8\%$ 得 25分 | $\ge 5\%$ 得 10分"
+        )
+        st.info(f"💡 **目前狀況**：{desc_pullback}")
+
+        st.markdown(f"**2. 個股恐慌 (RSI) 得分：`{s_rsi} / 25分`**")
+        st.caption(
+            "📌 **得分定義**：14日 RSI $< 30$ (極度過賣) 得 25分 | $< 40$ (相對低檔) 得 10分"
+        )
+        st.info(f"💡 **目前狀況**：{desc_rsi}")
+
+        st.markdown(f"**3. 均線位置得分：`{s_ma} / 20分`**")
+        st.caption(
+            "📌 **得分定義**：股價跌破 240日年線得 20分 | 跌破 60日季線得 10分"
+        )
+        st.info(f"💡 **目前狀況**：{desc_ma}")
+
+        st.markdown(f"**4. 大盤環境得分：`{s_market} / 20分`**")
+        st.caption(
+            "📌 **得分定義**：大盤 RSI $< 35$ 得 20分 | 加權指數跌破季線得 10分"
+        )
+        st.info(f"💡 **目前狀況**：{desc_market}")
+
+    # ==========================================
+    # 🎯 3. 個人每月扣款歷史明細紀錄表 (自動儲存與依 ETF 分類)
+    # ==========================================
+    st.markdown("---")
+    st.subheader(f"📝 個人每月定期定額買入明細 ({ticker})")
+
+    # 載入所有紀錄
+    all_records = load_all_records()
+
+    # 預設範例資料（若該 ETF 第一次開啟）
+    default_df = pd.DataFrame(
+        [
+            {"買入日期": "2024-01-02", "買入單價": 22.50, "買入股數": 66},
+            {"買入日期": "2024-02-01", "買入單價": 22.80, "買入股數": 65},
+        ]
     )
 
-    # --- 3. 個人每月扣款歷史明細紀錄表 ---
-    st.markdown("---")
-    st.subheader("📝 個人每月定期定額買入明細與資產彙整")
+    # 取得當前 ETF 的紀錄，沒有就建立預設值
+    if ticker not in all_records or not all_records[ticker]:
+        current_data = default_df.to_dict("records")
+    else:
+        current_data = all_records[ticker]
+
+    current_df = pd.DataFrame(current_data)
 
     with st.expander(
-        "📂 點擊展開 / 點擊表格可直接新增、修改您的買入價格與股數", expanded=True
+        f"📂 點擊展開 / 修改 `{ticker}` 的歷史明細（編輯後會自動永久儲存）",
+        expanded=True,
     ):
-        if "dca_records" not in st.session_state:
-            st.session_state.dca_records = pd.DataFrame(
-                [
-                    {"買入日期": "2024-01-02", "買入單價": 22.50, "買入股數": 66},
-                    {"買入日期": "2024-02-01", "買入單價": 22.80, "買入股數": 65},
-                    {"買入日期": "2024-03-01", "買入單價": 23.10, "買入股數": 64},
-                    {"買入日期": "2024-04-01", "買入單價": 22.20, "買入股數": 67},
-                ]
-            )
-
-        st.caption("💡 可在下方表格直接點擊編輯數值，或點選表格下方 `+` 新增扣款紀錄：")
+        st.caption(
+            f"💡 您正在編輯 **{ticker}** 的專屬扣款紀錄，切換到其他 ETF 時會自動載入相對應的紀錄！"
+        )
 
         edited_df = st.data_editor(
-            st.session_state.dca_records,
+            current_df,
             num_rows="dynamic",
             use_container_width=True,
+            key=f"editor_{ticker}",
             column_config={
                 "買入日期": st.column_config.TextColumn("扣款日期"),
                 "買入單價": st.column_config.NumberColumn(
@@ -187,6 +276,13 @@ else:
                 ),
             },
         )
+
+        # 當使用者編輯表格時，自動儲存至 json
+        updated_records = edited_df.to_dict("records")
+        if updated_records != current_data:
+            all_records[ticker] = updated_records
+            save_all_records(all_records)
+            st.toast(f"✅ 已為您自動儲存 {ticker} 的最新歷史紀錄！")
 
         edited_df["單筆金額"] = edited_df["買入單價"] * edited_df["買入股數"]
         total_dca_principal = float(edited_df["單筆金額"].sum())
@@ -205,7 +301,7 @@ else:
             else 0
         )
 
-        st.markdown("#### 📊 個人歷史買入統計總覽：")
+        st.markdown(f"#### 📊 {ticker} 歷史買入統計總覽：")
         a1, a2, a3 = st.columns(3)
         a1.metric("累積總投入本金", f"${total_dca_principal:,.0f} 元")
         a2.metric("累積持股總數量", f"{total_dca_shares:,.0f} 股")
