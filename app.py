@@ -102,7 +102,7 @@ else:
     m_rs = m_gain / m_loss
     market_rsi14 = float((100 - (100 / (1 + m_rs))).iloc[-1])
 
-    # 得分邏輯（含 0050 小跌即觸發）
+    # --- 得分邏輯（包含 0050 小跌即觸發） ---
     if pullback_pct <= -8:
         s_pullback = 35
         desc_pullback = f"現價 ${latest_price:.2f} 距高點 ${high_6m:.2f} 拉回 {pullback_pct:.1f}% (顯著拉回特價區)"
@@ -154,7 +154,7 @@ else:
 
     total_score = s_pullback + s_rsi + s_ma + s_market
 
-    # 計算建議加碼金額 (1000 - 5000 元)
+    # === 🎯 核心升級：計算建議加碼金額 (1000 - 5000 元) ===
     if total_score >= 80:
         suggested_amount = 5000
         signal_status = "🟢 【極佳加碼時機】"
@@ -253,7 +253,7 @@ else:
         )
         st.info(f"💡 **目前狀況**：{desc_market}")
 
-    # --- 3. 個人扣款歷史明細紀錄表 ---
+    # --- 3. 個人扣款歷史明細紀錄表 (自動帶入建議金額至模擬器) ---
     st.markdown("---")
     st.subheader(f"📝 個人每月定期定額買入明細 ({ticker})")
 
@@ -335,13 +335,14 @@ else:
             delta=f"{dca_roi:+.2f}% 報酬率",
         )
 
-    # --- 4. 逢低加碼情境模擬器 ---
+    # --- 4. 逢低加碼情境模擬器 (連動系統建議金額) ---
     st.markdown("---")
     st.subheader("💡 逢低加碼買進情境模擬器")
 
     with st.expander("🧮 點擊展開 / 輸入加碼試算參數", expanded=True):
         sim_col1, sim_col2 = st.columns(2)
 
+        # 預設自動帶入系統計算出的建議加碼額度
         default_add_val = suggested_amount if suggested_amount > 0 else 3000
         add_budget = sim_col1.number_input(
             "預計加碼金額 (台幣)", value=default_add_val, step=1000
